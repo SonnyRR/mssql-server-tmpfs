@@ -7,6 +7,11 @@ Running database containers with `tmpfs` volume mounts can save a lot
 of time in integration/E2E test scenarios, since volatile memory (RAM)
 is way more faster to access. This image is intended to do just that.
 
+**This image is designed for CI/CD pipelines** - specifically for running `MS SQL
+Server` in E2E/Integration tests via Testcontainers or similar tools. By storing
+database files in `RAM` instead of on disk, test suites execute significantly faster,
+translating to real-world time savings in your `CI/CD` workflows.
+
 Since `MS SQL Server 2025`, `tmpfs` is supported, but only for `tempdb`.
 This might not be ideal for everybody, since some cleanup tools like
 `Respawn` don't work with that.
@@ -15,7 +20,7 @@ This might not be ideal for everybody, since some cleanup tools like
 docker pull vkotzsev/mssql-server-tmpfs:2025-latest
 ```
 
-## Running
+## 🏃‍♀️ Running
 
 ```sh
 docker run -d \
@@ -25,5 +30,75 @@ docker run -d \
   -e ACCEPT_EULA=Y \
   -e MSSQL_SA_PASSWORD=<password> \
   -p 1433:1433 \
-  vkotzsev/mssql-server-tmpfs:2025-latest
+vkotzsev/mssql-server-tmpfs:2025-latest
 ```
+
+## 🚀 Use Cases
+
+### 🧪 Integration/E2E Testing with Testcontainers
+
+This image is designed to work seamlessly with [Testcontainers](https://github.com/testcontainers/testcontainers-dotnet)
+for .NET integration and end-to-end testing. By running `MS SQL Server` with `tmpfs`,
+tests execute significantly faster since database operations happen in-memory
+rather than hitting disk.
+
+```csharp
+[TestMethod]
+public async Task TestWithTmpfs()
+{
+    var container = new MsSqlBuilder()
+        .WithImage("vkotzsev/mssql-server-tmpfs:2025-latest")
+        .WithTmpfs(new Dictionary<string, string>
+        {
+            { "/var/opt/mssql/data", "size=4G,uid=10001,gid=10001" },
+            { "/var/opt/mssql/log", "size=1G,uid=10001,gid=10001" }
+        })
+        .WithPassword("TestPassword123!")
+        .Build();
+
+    await container.StartAsync();
+
+    // Tests run against in-memory database - much faster!
+}
+```
+
+### 🧹 C# Respawn Compatibility
+
+[Respawn](https://github.com/jbogard/Respawn) is a smart database cleanup library
+for .NET that resets your database to a clean state between tests.
+However, `Respawn` doesn't work with `tempdb` because it's designed to work with
+actual user databases.
+
+Since `MS SQL Server 2025` only supports `tmpfs` for `tempdb` out of the box,
+this custom image enables tmpfs for the actual database files. This allows you to:
+
+- Use `Respawn` for intelligent test data cleanup
+- Work with real databases rather than tempdb
+- Benefit from RAM-speed performance while maintaining compatibility with cleanup tools
+
+### ⚡ Performance Benefits
+
+Using `tmpfs` for your MS SQL container in `CI/CD` pipelines provides substantial performance gains:
+
+| Aspect               | Disk-based                   | tmpfs (RAM)                 |
+| -------------------- | ---------------------------- | --------------------------- |
+| Query execution      | Baseline                     | **2-10x faster**            |
+| Write operations     | Disk I/O bottleneck          | **Near-instant**            |
+| Container startup    | Disk initialization required | **~Instant**                |
+| Test suite execution | Minutes                      | **Seconds to minutes less** |
+
+**Why it's faster:**
+
+- No disk I/O overhead - all reads/writes happen in memory
+- No storage initialization on container start
+- Zero disk contention in parallel test execution
+- Ideal for write-heavy test scenarios (inserts, updates, deletes)
+
+This makes it particularly valuable for CI/CD pipelines where test execution time
+directly impacts delivery speed.
+
+## 📚 Learn More About tmpfs
+
+- [Docker tmpfs mounts documentation](https://docs.docker.com/storage/tmpfs/)
+- [Linux tmpfs man page](https://man7.org/linux/man-pages/man5/tmpfs.5.html)
+- [Wikipedia: tmpfs](https://en.wikipedia.org/wiki/Tmpfs)
