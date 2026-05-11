@@ -12,5 +12,18 @@ This might not be ideal for everybody, since some cleanup tools like
 `Respawn` don't work with that.
 
 ```sh
-docker pull vkotzsev/mssql-server-tmpfs:2022-latest
+docker pull vkotzsev/mssql-server-tmpfs:2025-latest
+```
+
+## Running
+
+```sh
+docker run -d \
+  --name mssql-tmpfs \
+  --tmpfs /var/opt/mssql/data:uid=10001,gid=10001,size=4G \
+  --tmpfs /var/opt/mssql/log:uid=10001,gid=10001,size=1G \
+  -e ACCEPT_EULA=Y \
+  -e MSSQL_SA_PASSWORD=<password> \
+  -p 1433:1433 \
+  vkotzsev/mssql-server-tmpfs:2025-latest
 ```
