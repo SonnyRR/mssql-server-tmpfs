@@ -1,4 +1,4 @@
-FROM debian:bookworm-slim AS builder
+FROM ubuntu:latest AS builder
 
 COPY nodirect_open.c /
 RUN apt-get update \
