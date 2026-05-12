@@ -20,6 +20,33 @@ This might not be ideal for everybody, since some cleanup tools like
 docker pull vkotzsev/mssql-server-tmpfs:2025-latest
 ```
 
+## 🔍 Verifying tmpfs Mounts
+
+Once the container is running, you can verify that the data and log directories are mounted as tmpfs:
+
+```sh
+docker exec mssql-tmpfs df -h | grep tmpfs
+```
+
+Expected output:
+
+```
+tmpfs           4.0G  73M  4.0G   2% /var/opt/mssql/data
+tmpfs           1.0G  236K  1.0G  1% /var/opt/mssql/log
+```
+
+You can also confirm the preload hook is active:
+
+```sh
+docker exec mssql-tmpfs cat /etc/ld.so.preload
+```
+
+Expected output:
+
+```
+/nodirect_open.so
+```
+
 ## 🏃‍♀️ Running
 
 ```sh
