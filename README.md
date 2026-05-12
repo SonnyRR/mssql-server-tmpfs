@@ -47,6 +47,40 @@ Expected output:
 /nodirect_open.so
 ```
 
+## ⚙️ How It Works
+
+MS SQL Server opens data files with `O_DIRECT`, a flag that performs **direct I/O** — reading and writing straight to storage, bypassing the OS page cache. This is excellent for production workloads on SSDs/NVMe drives, but it is **incompatible with tmpfs** mounts. When the kernel detects `O_DIRECT` on a tmpfs filesystem, it rejects it with `EINVAL`, and MS SQL fails to start:
+
+```
+Direct open file /var/opt/mssql/data/master.mdf failed with error 22
+```
+
+### The Fix: `ld.so.preload`
+
+Rather than patching MS SQL's source code (which would require rebuilding the entire database engine), this image uses **`ld.so.preload`** — a Linux mechanism that lets you interpose arbitrary shared library functions into **every process** before it starts.
+
+`nodirect_open.c` is a tiny shared library that overrides the `open()` system call. When any process in the container calls `open()`, it goes through our wrapper first, which **strips the `O_DIRECT` flag** before calling the real `open()`. This allows MS SQL to operate on tmpfs mounts without ever attempting direct I/O.
+
+```c
+int open(const char *pathname, int flags, ...)
+{
+    static orig_open_f_type orig_open;
+    if (!orig_open)
+        orig_open = dlsym(RTLD_NEXT, "open");
+    return orig_open(pathname, flags & ~O_DIRECT);
+}
+```
+
+### Why This Approach?
+
+| Approach | Pros | Cons |
+|---|---|---|
+| Source-patch MS SQL | Clean, official | Requires rebuild of entire DB engine; legally/commercially complex |
+| **`ld.so.preload` (this)** | Zero MS SQL changes, ~16 lines of C, works for all versions | Slight syscall overhead (negligible vs DB workload) |
+| Bind mount workaround | No code needed | Loses tmpfs benefits (disk-backed) |
+
+The preload approach is lightweight, non-invasive, and works regardless of which SQL Server version or CU you're running.
+
 ## 🏃‍♀️ Running
 
 ```sh
