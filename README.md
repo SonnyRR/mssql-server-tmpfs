@@ -1,5 +1,7 @@
 # 💽 MS SQL Server w/ tmpfs support
 
+[![Docker Hub](https://img.shields.io/docker/pulls/vkotzsev/mssql-server-tmpfs?style=flat-square&logo=docker&label=Docker%20Hub)](https://hub.docker.com/r/vkotzsev/mssql-server-tmpfs)
+
 A custom image that uses `mcr.microsoft.com/mssql/server` as a base,
 but adds `tmpfs` support.
 
