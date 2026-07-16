@@ -24,6 +24,12 @@ This might not be ideal for everybody, since some cleanup tools like
 docker pull vkotzsev/mssql-server-tmpfs:2025-latest
 ```
 
+Available tags:
+- `2025-latest` — latest build on the `2025` track (updated on every push)
+- `2022-latest` — legacy build on the `2022` track
+- `latest` — latest build from `master` branch
+- `<commit-sha>` — pinned to a specific build (e.g. `a845231`)
+
 ## 🏃‍♀️ Running
 
 ```sh
