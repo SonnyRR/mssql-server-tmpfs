@@ -36,3 +36,10 @@ jobs:
           docker push ${{ vars.USERNAME }}/${{ vars.IMG_NAME }}:${{ github.event.inputs.image-tag }}
           docker tag ${{ vars.IMG_NAME }}:${{ github.event.inputs.image-tag }} ${{ vars.USERNAME }}/${{ vars.IMG_NAME }}:${{ github.sha }}
           docker push ${{ vars.USERNAME }}/${{ vars.IMG_NAME }}:${{ github.sha }}
+
+      - name: Update Docker Hub description
+        uses: peter-evans/dockerhub-description@e98e4d1628a5f3be2be7c231e50981aee98723ae
+        with:
+          username: ${{ vars.USERNAME }}
+          password: ${{ secrets.PAT }}
+          repository: ${{ vars.USERNAME }}/${{ vars.IMG_NAME }}
