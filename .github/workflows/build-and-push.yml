@@ -40,10 +40,3 @@ jobs:
             docker tag ${{ vars.IMG_NAME }}:${{ github.event.inputs.image-tag }} ${{ vars.USERNAME }}/${{ vars.IMG_NAME }}:latest
             docker push ${{ vars.USERNAME }}/${{ vars.IMG_NAME }}:latest
           fi
-
-      - name: Update Docker Hub description
-        uses: peter-evans/dockerhub-description@9349e0c7485103c2926ebefbab9a75502d396b1c
-        with:
-          username: ${{ vars.USERNAME }}
-          password: ${{ secrets.PAT }}
-          repository: ${{ vars.USERNAME }}/${{ vars.IMG_NAME }}
