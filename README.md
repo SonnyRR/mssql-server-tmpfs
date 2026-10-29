@@ -24,6 +24,8 @@ This might not be ideal for everybody, since some cleanup tools like
 docker pull vkotzsev/mssql-server-tmpfs:2025-latest
 ```
 
+Base images are **digest-pinned** (both the ubuntu 26.04 LTS builder and the `mcr.microsoft.com/mssql/server:2025-latest` base), so every build is byte-for-byte reproducible and immune to silent upstream repushes.
+
 Available tags:
 - `2025-latest` — latest build on the `2025` track (updated on every push)
 - `2022-latest` — legacy build on the `2022` track
