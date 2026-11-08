@@ -146,6 +146,20 @@ jobs:
           output: vex-report.json
           format: openvex
 
+      - name: Fix ownership of Copa OpenVEX output
+        # copa-action executes copa inside a Docker container that runs as
+        # root with the workspace bind-mounted at /data, so the OpenVEX file
+        # it writes is owned by root with permissions the runner user cannot
+        # read. That makes actions/upload-artifact fail with
+        # "EACCES: permission denied" while zipping the artifact. Normalize
+        # ownership/permissions before the upload (passwordless sudo on
+        # GitHub-hosted runners).
+        if: ${{ steps.vulns.outputs.count != '0' }}
+        shell: bash
+        run: |
+          sudo chown "$(id -u):$(id -g)" vex-report.json
+          sudo chmod 644 vex-report.json
+
       - name: Upload OpenVEX remediation record
         if: ${{ steps.vulns.outputs.count != '0' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
