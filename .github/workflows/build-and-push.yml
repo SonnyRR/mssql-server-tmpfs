@@ -65,7 +65,11 @@ jobs:
       #      record of what it remediated.
       #   3. A verify rescan acts as the release gate: the job fails if fixable
       #      HIGH/CRITICAL OS vulnerabilities remain after patching.
-      #   4. Only after the gate passes are the promoted tags (image-tag input,
+      #   4. A functional smoke test runs the final image exactly the way
+      #      consumers do (data & log dirs on tmpfs) and fails unless SQL
+      #      Server actually starts and serves queries from tmpfs-backed
+      #      storage.
+      #   5. Only after the gate passes are the promoted tags (image-tag input,
       #      plus latest on master) applied to the final image via
       #      `docker buildx imagetools create` (server-side, digest-based).
       #
@@ -213,6 +217,69 @@ jobs:
           severity: HIGH,CRITICAL
           exit-code: '1'
           version: ${{ env.TRIVY_VERSION }}
+
+      # Functional smoke test of the final image (original or Copa-patched),
+      # run exactly the way consumers run this image (see README "Running"):
+      # with the data & log directories mounted as tmpfs. The stock base image
+      # aborts on tmpfs ("Direct open file ... failed with error 22"), so a
+      # successful start + query proves the O_DIRECT-stripping preload hook is
+      # configured AND effective, and that the Copa patch layer has not broken
+      # any of it. Failing here blocks promotion of the release tags, same as
+      # the vulnerability gate above.
+      - name: Smoke test final image with tmpfs volumes
+        shell: bash
+        env:
+          IMAGE: ${{ steps.final.outputs.final_image }}
+          SA_PASSWORD: 'T3mpfs-Sm0ke-Test!'
+        run: |
+          set -euo pipefail
+
+          name=smoke-tmpfs
+
+          cleanup() {
+            rc=$?
+            if [[ $rc -ne 0 ]]; then
+              echo "Smoke test failed with rc=${rc}; last 40 container log lines:"
+              docker logs "$name" 2>&1 | tail -n 40 || true
+            fi
+            docker rm -f "$name" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker run -d --name "$name" \
+            --tmpfs /var/opt/mssql/data:uid=10001,gid=10001,size=4G \
+            --tmpfs /var/opt/mssql/log:uid=10001,gid=10001,size=1G \
+            -e ACCEPT_EULA=Y \
+            -e MSSQL_SA_PASSWORD="$SA_PASSWORD" \
+            "$IMAGE"
+
+          echo "1/4: data & log directories are backed by tmpfs"
+          test "$(docker exec "$name" stat -f -c %T /var/opt/mssql/data)" = tmpfs
+          test "$(docker exec "$name" stat -f -c %T /var/opt/mssql/log)" = tmpfs
+
+          echo "2/4: O_DIRECT-stripping preload hook is configured"
+          docker exec "$name" cat /etc/ld.so.preload | grep -q 'nodirect_open.so'
+
+          echo "3/4: SQL Server reaches a queries-ready state on tmpfs storage"
+          sqlcmd="$(docker exec "$name" sh -c 'ls /opt/mssql-tools*/bin/sqlcmd 2>/dev/null | head -n1')"
+          test -n "$sqlcmd"
+          started=''
+          for _ in $(seq 1 30); do
+            if docker exec "$name" "$sqlcmd" -S localhost -U sa -P "$SA_PASSWORD" -C -b -Q 'SELECT 1;' >/dev/null 2>&1; then
+              started=yes
+              break
+            fi
+            sleep 10
+          done
+          if [[ -z "$started" ]]; then
+            echo "::error::SQL Server failed to reach a queries-ready state within 300s."
+            exit 1
+          fi
+
+          echo "4/4: the actual database files land on the tmpfs mount"
+          test "$(docker exec "$name" stat -f -c %T /var/opt/mssql/data/master.mdf)" = tmpfs
+
+          echo "Smoke test passed: SQL Server is serving queries with its database files on tmpfs."
 
       - name: Promote image-tag/latest tags to final image
         shell: bash
