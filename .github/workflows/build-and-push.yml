@@ -146,6 +146,19 @@ jobs:
           output: vex-report.json
           format: openvex
 
+      - name: Push Copa-patched image to registry
+        # copa-action never passes copa's --push flag, and copa without
+        # --push only exports the patched image into the runner's local
+        # Docker image store ("exporting to docker image format"). The
+        # registry therefore never sees the copa-<sha> tag, which breaks
+        # the promotion step (docker buildx imagetools create reads only
+        # from the registry) with "not found". Push it here; the runner's
+        # docker CLI already holds registry credentials from the login
+        # step above.
+        if: ${{ steps.vulns.outputs.count != '0' }}
+        shell: bash
+        run: docker push "${{ steps.copa.outputs.patched-image }}"
+
       - name: Fix ownership of Copa OpenVEX output
         # copa-action executes copa inside a Docker container that runs as
         # root with the workspace bind-mounted at /data, so the OpenVEX file
