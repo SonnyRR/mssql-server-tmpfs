@@ -1,4 +1,5 @@
 name: Build & Push Image
+
 on:
   workflow_dispatch:
     inputs:
@@ -7,36 +8,198 @@ on:
         required: false
         default: '2025-latest'
 
+permissions:
+  contents: read
+
+# Single source of truth for the Trivy scanner version used by every scan
+# step (SARIF scan, Copa report scan, verify gate).
+# Note: must include the leading "v" — it is passed verbatim to Trivy's
+# contrib/install.sh via setup-trivy, which loads
+# github.com/aquasecurity/trivy/releases/<version> and fails with
+# "unable to find '...'" when the tag does not exist verbatim.
+env:
+  TRIVY_VERSION: v0.76.2
+
 jobs:
   build-image:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required to publish Trivy SARIF results to the code scanning Security tab.
+      security-events: write
     env:
       IMG_NAME: ''
+      IMAGE_REPO: docker.io/${{ vars.USERNAME }}/${{ vars.IMG_NAME }}
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Login to Docker Hub
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           username: ${{ vars.USERNAME }}
           password: ${{ secrets.PAT }}
 
-      - name: Build
+      # Only the immutable, commit-pinned sha tag is published at build time.
+      # The image-tag/latest tags below are applied to the FINAL image (original
+      # or Copa-patched) by the promotion step, after the Trivy scan + Copacetic
+      # patch + verify gate passes. This keeps vulnerable images out of the
+      # versioned/latest tags even when the image itself is already in the
+      # registry under its sha tag.
+      - name: Build and push commit-pinned image
         shell: bash
-        run: docker buildx build -t ${{ vars.IMG_NAME }}:${{ github.event.inputs.image-tag }} --load .
+        run: docker buildx build --push -t "${{ env.IMAGE_REPO }}:${{ github.sha }}" .
 
-      - name: Push
+      # ---------------------------------------------------------------------------
+      # Vulnerability scanning & auto-remediation pipeline:
+      #
+      #   1. Trivy scans the just-pushed image (full vuln scan -> SARIF -> code
+      #      scanning) and again with an OS-packages-only, fixable-only JSON
+      #      report sized for Copacetic.
+      #   2. If fixable OS-package vulnerabilities were found, copa patches the
+      #      image in place (adds a lightweight patch layer via apt/zypper/dnf)
+      #      and pushes it alongside the original, together with an OpenVEX
+      #      record of what it remediated.
+      #   3. A verify rescan acts as the release gate: the job fails if fixable
+      #      HIGH/CRITICAL OS vulnerabilities remain after patching.
+      #   4. Only after the gate passes are the promoted tags (image-tag input,
+      #      plus latest on master) applied to the final image via
+      #      `docker buildx imagetools create` (server-side, digest-based).
+      #
+      # Supply-chain note: trivy-action was compromised in March 2026
+      # (GHSA-69fq-xp46-6x23); v0.35.0+ are the clean releases. The action is
+      # therefore pinned to the immutable SHA of v0.36.0, never a mutable tag.
+      # ---------------------------------------------------------------------------
+
+      - name: Scan image with Trivy (full vuln scan, SARIF output)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.IMAGE_REPO }}:${{ github.sha }}
+          format: sarif
+          output: trivy-full.sarif
+          scanners: vuln
+          # Pin the scanner version explicitly rather than riding the action's
+          # per-release default; setup-trivy then caches the binary too.
+          # TRIVY_VERSION (workflow-level env) is the single source of truth.
+          version: ${{ env.TRIVY_VERSION }}
+
+      - name: Upload SARIF results to GitHub Code Scanning
+        # continue-on-error: code scanning upload requires GitHub Advanced
+        # Security on private repos; a missing GHAS license must not block
+        # releases. The actual release gate is the dedicated verify step below.
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          sarif_file: trivy-full.sarif
+          category: trivy-mssql-server-tmpfs
+
+      - name: Scan image with Trivy (fixable OS packages, JSON for Copa)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.IMAGE_REPO }}:${{ github.sha }}
+          format: json
+          output: trivy-os-pkgs-report.json
+          # Copa can only patch OS packages (dpkg/rpm/zypper); language/library
+          # findings require rebuilding the Dockerfile instead.
+          vuln-type: os
+          # Fixable-only: unfixed findings are upstream/base-image issues that
+          # cannot be remediated here; gate policy excludes them.
+          ignore-unfixed: true
+          version: ${{ env.TRIVY_VERSION }}
+
+      - name: Count fixable OS-package vulnerabilities
+        id: vulns
         shell: bash
+        env:
+          REPORT: trivy-os-pkgs-report.json
         run: |
-          docker tag ${{ vars.IMG_NAME }}:${{ github.event.inputs.image-tag }} ${{ vars.USERNAME }}/${{ vars.IMG_NAME }}:${{ github.event.inputs.image-tag }}
-          docker push ${{ vars.USERNAME }}/${{ vars.IMG_NAME }}:${{ github.event.inputs.image-tag }}
-          docker tag ${{ vars.IMG_NAME }}:${{ github.event.inputs.image-tag }} ${{ vars.USERNAME }}/${{ vars.IMG_NAME }}:${{ github.sha }}
-          docker push ${{ vars.USERNAME }}/${{ vars.IMG_NAME }}:${{ github.sha }}
-          if [ "${{ github.ref }}" = "refs/heads/master" ]; then
-            docker tag ${{ vars.IMG_NAME }}:${{ github.event.inputs.image-tag }} ${{ vars.USERNAME }}/${{ vars.IMG_NAME }}:latest
-            docker push ${{ vars.USERNAME }}/${{ vars.IMG_NAME }}:latest
+          set -euo pipefail
+          count="$(jq '[.Results[]? | select(.Class == "os-pkgs" and .Vulnerabilities != null) | .Vulnerabilities[]] | length' "$REPORT")"
+          echo "count=${count}" >> "$GITHUB_OUTPUT"
+          if [[ "$count" -gt 0 ]]; then
+            echo "::notice::Found ${count} fixable OS-package vulnerabilities; Copa patching will run."
+          else
+            echo "::notice::No fixable OS-package vulnerabilities found; skipping Copa patching."
           fi
+
+      - name: Patch image OS packages with Copa
+        # Only runs when the scan found patchable OS-package vulnerabilities.
+        if: ${{ steps.vulns.outputs.count != '0' }}
+        id: copa
+        uses: project-copacetic/copa-action@3843e22efdca421adb37aa8dec103a0f1db68544 # v1.2.1
+        with:
+          image: ${{ env.IMAGE_REPO }}:${{ github.sha }}
+          image-report: trivy-os-pkgs-report.json
+          patched-tag: copa-${{ github.sha }}
+          # Pin Copa explicitly; the action otherwise resolves "latest" from
+          # the GitHub API at runtime, which is an unpinned supply chain.
+          copa-version: 0.15.0
+          # Free extra headroom beyond the 5m default: zypper/dpkg refreshes on
+          # full distro images can be slow.
+          timeout: 15m
+          # OpenVEX record of remediated vulnerabilities (audit trail).
+          output: vex-report.json
+          format: openvex
+
+      - name: Upload OpenVEX remediation record
+        if: ${{ steps.vulns.outputs.count != '0' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: vex-report
+          path: vex-report.json
+          if-no-files-found: warn
+
+      - name: Select final image (Copa-patched or original)
+        id: final
+        shell: bash
+        env:
+          REPO: ${{ env.IMAGE_REPO }}
+          SHA_TAG: ${{ github.sha }}
+          VULN_COUNT: ${{ steps.vulns.outputs.count }}
+        run: |
+          set -euo pipefail
+          if [[ "$VULN_COUNT" == "0" ]]; then
+            final_image="${REPO}:${SHA_TAG}"
+          else
+            # copa ran (and any failure would have already failed the job).
+            final_image="${REPO}:copa-${SHA_TAG}"
+          fi
+          echo "final_image=${final_image}" >> "$GITHUB_OUTPUT"
+
+      # Release gate: fail if fixable HIGH/CRITICAL OS vulnerabilities remain
+      # after patching. Failed promotion means the release/latest tags are never
+      # applied.
+      - name: Verify final image has no remaining HIGH/CRITICAL OS vulns
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ steps.final.outputs.final_image }}
+          format: table
+          scanners: vuln
+          vuln-type: os
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          version: ${{ env.TRIVY_VERSION }}
+
+      - name: Promote image-tag/latest tags to final image
+        shell: bash
+        env:
+          IMAGE_REPO: ${{ env.IMAGE_REPO }}
+          IMAGE_TAG: ${{ inputs.image-tag }}
+          FINAL_IMAGE: ${{ steps.final.outputs.final_image }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          args=( -t "${IMAGE_REPO}:${IMAGE_TAG}" )
+          if [[ "$REF" == "refs/heads/master" ]]; then
+            args+=( -t "${IMAGE_REPO}:latest" )
+          fi
+          # Server-side manifest copy (no image download): points the promoted
+          # tags at the exact manifest of the final image.
+          docker buildx imagetools create "${args[@]}" "$FINAL_IMAGE"
